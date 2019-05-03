@@ -65,23 +65,36 @@
   ((connection-data :type connection-data :initarg :connection-data :reader connection-data)
    (connections :type (cons cl-postgres:database-connection) :initform nil :accessor connections)
    (used-connections :type (cons cl-postgres:database-connection) :initform nil :accessor used-connections)
-   (lock :initform (bt:make-lock) :reader lock))
+   (lock :initform (bt:make-lock) :reader lock)
+   (max-connections :type fixnum :initform 50 :initarg :max-connections :reader max-connections))
   (:metaclass pool-mc))
 
 (defmethod validate-superclass ((c1 pool)(c2 pool-mc)) T)
 
+(defmethod overflow-p ((this pool))
+  (= (+ (length (connections this))(length (used-connections this))) (max-connections this)))
+
+(define-condition pool-overflow (condition) ()
+  (:report (lambda(condition stream)
+             (declare (ignore condition))
+             (write-string 
+              (format nil "Pool won't open more than ~D connections" 
+                      (max-connections (make-instance 'pool))) stream))))
+
 (defmethod connect ((this pool))
-  (let ((conn nil))
-    (bt:acquire-lock (lock this) T)
-    (if (connections this)
+  (if (overflow-p this)
+      (values nil (make-condition 'pool-overflow))
+    (let ((conn nil))
+      (bt:acquire-lock (lock this) T)
+      (if (connections this)
+          (progn
+            (setq conn (pop (connections this)))
+            (push conn (used-connections this)))
         (progn
-          (setq conn (pop (connections this)))
-          (push conn (used-connections this)))
-      (progn
-        (setq conn (connect (connection-data this)))
-        (push conn (used-connections this))))
-    (bt:release-lock (lock this))
-    conn))
+          (setq conn (connect (connection-data this)))
+          (push conn (used-connections this))))
+      (bt:release-lock (lock this))
+      conn)))
 
 (defmethod disconnect ((this pool) conn)
   (bt:acquire-lock (lock this) T)
@@ -114,7 +127,7 @@
 
 (defmacro with-pooled-query (query-txt result-sym &body code)
   `(with-pooled-connection 
-       (make-instance (quote pool)) conn
+       (make-instance (quote pool) :connection-data (make-connection-data)) conn
      (multiple-value-bind (result condition)
          (funcall (execute-query-fn 
                    (connection-data (make-instance (quote pool))))
@@ -195,6 +208,12 @@
   (multiple-value-bind (result condition)
       (with-pooled-query "select * from test" result (format T "RESULT: ~A~%" result))
     (is-false condition)
+    (loop with timeout = 0 
+          while (and (used-connections (make-instance 'pool))
+                     (< timeout .1))
+          do
+          (sleep .01)
+          (incf timeout .01))
     (is-false (used-connections (make-instance 'pool))))
   (reset (make-instance 'pool)))
 
