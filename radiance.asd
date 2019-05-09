@@ -1,3 +1,3 @@
 (defsystem "radiance"
-  :depends-on ("usocket" "cl-postgres" "fiveam" "bordeaux-threads")
+  :depends-on ("usocket" "closer-mop" "cl-postgres" "fiveam" "bordeaux-threads")
   :components ((:file "radiance")))
