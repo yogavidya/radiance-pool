@@ -1,16 +1,117 @@
 (defpackage :radiance
   (:use :cl  :cl-postgres :fiveam :BORDEAUX-THREADS)
-  (:export :with-pooled-query :pool :reset :test-package))
-
+  (:export :initialize :define-connector :define-disconnector :define-executor 
+   :connection-data :*default-connection-data*
+   :pool :connect :disconnect :execute-query :reset :force-new-pool :pool-report
+   :pooled-query
+   :test-package)
+  (:documentation "
+The RADIANCE package: pooled access to a single database. Designed to be used inside a backend,
+it's supposed to never invoke the debugger - to run unattended - and safely handles multi-threaded calls.
+Usage:
+* general: customizazion
+  The POOL object is a singleton. It is created by the first call to any of the following:
+  - (MAKE-INSTANCE 'RADIANCE:POOL) => create or access the singleton
+  - (RADIANCE:POOL-REPORT) => print information about the singleton; implicitly creates one
+  - (RADIANCE:POOLED-QUERY) => returns the result of a query on an implicit pooled connection
+  - (RADIANCE:TEST-PACKAGE) => run the test suite, creating/recreating pools as necessary.
+  And it is (re)created by
+  - (force-new-pool) => dangerous: forcibly closes all pooled connections and recreates the singleton
+  Default pool parameters are as follows: local postgresql instance, user 'scratch-owner',
+  database 'scratch', password 'none', maximum number of connections: 10.
+  Pool parameters must thus be customized before first use by a call to 
+  (RADIANCE:INITIALIZE 
+   (&KEY 
+    (DB-NAME "scratch") ; => database for pooled connections
+    (DB-USER "scratch-owner")(db-password "none") ; => credentials for pooled connections
+    (DB-HOST "localhost") (db-port 5432) ; => the database host and port for pooled connections
+    (DB-CONNECTOR #'postgresql-connector) ; => connection hook
+    (DB-DISCONNECTOR #'postgresql-disconnector) ; => disconnection hook
+    (DB-EXECUTOR #'postgresql-executor) ; => query execution hook
+    (MAX-CONNECTIONS *default-max-connections*) ; => maximum number of pooled connections
+    (TEST-QUERY *test-query*)) ; => text of query to be used in test suite
+  If the backend for your use case is a PostgreSQL server, you can ignore db-connectior,
+  db-disconnector and db-executor.
+  If you use a different database engine - or you want to customize default behaviour - you must
+  provide your own hook functions. Best way to do this is with the three macros
+  DEFINE-CONNECTOR, DEFINE-DISCONNECTOR and DEFINE-EXECUTOR: see below how they are used to generate
+  default PostgreSQL hooks. 
+  Ça va sans dire: generate your hooks BEFORE your call to (INITIALIZE).
+* case 1: tests
+  Customize your POOL as described above, then (RADIANCE:TEST-PACKAGE). 
+* case 2: production
+  Customize your POOL as described above, then (RADIANCE:POOLED-QUERY <query-text>) wherever you need
+  to read from or write to your database. Successful operations will return the query result in the format
+  defined in your :DB-EXECUTOR (list of rows as alists is the default).
+  If a condition is signaled along the chain of implicit connect-execute-disconnect operations,
+  POOLED-QUERY will return (VALUES NIL CONDITION)
+"))
 (in-package :radiance)
-(fiveam:in-suite* radiance-tests)
+(in-suite* 'radiance-tests)
+
 
 ;;
 ;; CLASS: connection-data
 ;;
+(defmacro define-connector ((name connection-data-var) &body connection-forms)
+"Creates a DB-CONNECTOR hook for (INITIALIZE).
+IN: NAME: hook's name
+    CONNECTION-DATA-VAR: the variable for CONNECTION-DATA
+    CONNECTION-FORMS: implicit PROGN using data in CONNECTION-DATA-VAR to create
+      and return a connection
+OUT: a function named NAME to be used as a :DB-CONNECTOR argument for (INITIALIZE)"
+  `(defun ,name (,connection-data-var)
+     (handler-case
+         (progn ,@connection-forms)
+       (condition (c) (values nil c)))))
+
+(defmacro define-disconnector ((name connection-var) &body disconnection-forms)
+"Creates a DB-DISCONNECTOR hook for (INITIALIZE).
+IN: NAME: hook's name
+    CONNECTION-VAR: the connection variable
+    DISCONNECTION-FORMS: implicit PROGN to disconnect CONNECTION-VAR
+OUT: a function named NAME to be used as a :DB-DISCONNECTOR argument for (INITIALIZE)"  
+`(defun ,name (,connection-var)
+     (handler-case
+         (progn ,@disconnection-forms)
+       (condition (c) (values nil c))
+       (:no-error () t))))
+
+
+(defmacro define-executor ((name connection-var query-var error-restarts) &body execute-forms)
+    `(defun ,name (,connection-var ,query-var)
+       (labels 
+           ((executor ()
+              (handler-case
+                  (progn ,@execute-forms)
+                ,@error-restarts
+                (error (c) c))))
+         (let ((result (executor)))
+           (disconnect (connection-data (make-instance 'pool)) ,connection-var)
+           (if (typep result 'condition)
+               (progn 
+                 (values nil result))
+             result)))))
+
+(define-connector (postgresql-connector conn-data)
+                  (cl-postgres:open-database (name conn-data)
+                                             (user conn-data)
+                                             (password conn-data)
+                                             (host conn-data)
+                                             (port conn-data)))
+
+(define-disconnector (postgresql-disconnector conn)
+      (cl-postgres:close-database conn))
+
+(define-executor (postgresql-executor conn query-txt ((database-connection-lost () 
+             (cl-postgres:reopen-database conn)
+             (executor))))
+  (exec-query conn query-txt 'alist-row-reader))
+#|
 (defun postgresql-connector (conn-data)
-"success => connection \
- error => (values nil condition)"
+"Connects using CONN-DATA. 
+success => connection 
+error => (values nil condition)"
   (handler-case
       (cl-postgres:open-database (name conn-data)
                                  (user conn-data)
@@ -28,6 +129,8 @@
     (:no-error () t)))
 
 (defun postgresql-executor (conn query-txt)
+"success => query rows \
+ error => (values nil condition)"
   (labels 
       ((executor ()
          (handler-case
@@ -42,7 +145,7 @@
           (progn 
             (values nil result))
         result))))
-
+|#
 
 (defclass connection-data ()
   ((name :type string :initarg :name :reader name)
@@ -69,9 +172,11 @@
                  :name "scratch"
                  :user "scratch-owner"
                  :password "none"))
-
-;;-------------------------------------------
+;;
+;; connection-data tests
+;;
 (def-test connection-data ()
+  (print "Tests: connection-data")
   (let* ((bad-connection-data
           (make-instance 'connection-data :name "lkajshd" :user "sdsd" :password "dfsdf"))
          (result-0
@@ -93,14 +198,12 @@
                             (first result-1))))))
     (is-false (first result-0))
     (is-true (second result-0))
-    (and (second result-0) (format t "~%=> Bad (connect) returns: ~A~%" (second result-0)))
     (is-true (first result-1))
     (is-false (second result-1))
     (is-true (first result-2))
     (is-false (second result-2))
     (is-true (first result-3))
-    (is-false (second result-3))
-    (and (first result-2) (format t "~%=> Successful query returns: ~A~%" (first result-2)))))
+    (is-false (second result-3))))
 
 
 
@@ -116,7 +219,7 @@
   (if (the-pool c) (the-pool c)
     (setf (the-pool c) (call-next-method))))
 
-(defparameter *default-max-connections* 2)
+(defparameter *default-max-connections* 10)
 
 (defclass pool ()
   ((connection-data :type connection-data 
@@ -217,6 +320,12 @@
           (length (connections (make-instance 'pool)))
           (length (used-connections (make-instance 'pool)))))
 
+;;
+;; pool tests
+;;
+
+(defparameter *test-query* "select * from test")
+
 (def-test pool ()
   (let*
       ((result-0 (force-new-pool))
@@ -233,7 +342,7 @@
                        collect (multiple-value-bind 
                                    (r c)
                                    (execute-query p (nth (1- n)(used-connections p))
-                                                  "select * from test")
+                                                  *test-query*)
                                  (list r c))))
        ;create a set of disconnection results; last one is invalid
        (result-4 (loop for n from 1 to (1+ (max-connections p))
@@ -266,47 +375,72 @@
     (is-false (used-connections p))
     (reset p)
     (is-false (connections p))))
+
  
 (defparameter *concurrent-test-results* nil)
 (defparameter *concurrent-test-lock* (make-lock))
-(defparameter *concurrent-test-start* nil)
-(defparameter *test-output-file-pattern*
-  (if (string= (software-type) "Linux") "/srv/pool/pooled.query.~D.txt"
-    "d:/pool/pooled.query.~D.txt"))
 (defparameter *concurrent-test-index* 0)
-(defparameter *concurrent-test-done* nil)
-(defparameter *concurrent-tests* 20)
+(defparameter *concurrent-tests* 50)
+(defparameter *concurrent-test-start* nil)
+(defparameter *concurrent-tests-done* 0)
 
 (def-test concurrent-operations ()
   ; ensure pool empty
-  (force-new-pool :max-connections 50)
+  (force-new-pool :max-connections 90)
   (loop while (< *concurrent-test-index* *concurrent-tests*) do
     (make-thread 
      (lambda() 
-       (loop while (null *concurrent-test-start*) do (sleep .01))
+       (loop while (null *concurrent-test-start*) do (sleep (/ (random  1000) 1000)))
        (let ((start-time (get-internal-real-time))
              (conn (connect (make-instance 'pool))))
          (multiple-value-bind (r c)
-             (execute-query (make-instance 'pool) conn  "select * from test")
+             (execute-query (make-instance 'pool) conn *test-query*)
            (disconnect (make-instance 'pool) conn)
-           (acquire-lock *concurrent-test-lock* T)
-           (push  `(,$n ,r ,c 
-                        (time ,(float (/ (- (get-internal-real-time) start-time) internal-time-units-per-second ))))
-                  *concurrent-test-results*)
-           (release-lock *concurrent-test-lock*)))
-       (when (= $n (1- *concurrent-tests*)) (setf *concurrent-test-done* T)))
+           (with-lock-held (*concurrent-test-lock*)
+             (push  `((thread ,$n) (result ,r) (condition ,c) 
+                          (time ,(float (/ (- (get-internal-real-time) start-time) internal-time-units-per-second ))))
+                    *concurrent-test-results*))))
+       (incf *concurrent-tests-done*))
      :name (format nil "concurrency thread ~D" *concurrent-test-index*) 
      :initial-bindings `(($n . ,*concurrent-test-index*)))
     (incf *concurrent-test-index*))
   (setf *concurrent-test-start* T)
-  (loop while (null *concurrent-test-done*) do
-        (sleep .1))
+  ;wait until all threads done
+  (loop while (< *concurrent-tests-done* *concurrent-tests*) do (sleep .1))
   (acquire-lock *concurrent-test-lock* T)
+  (dolist (current-result *concurrent-test-results*)
+    (is-true (first (assoc 'result current-result))))
   (is-true (= *concurrent-tests* (length *concurrent-test-results*)))
-  (format t "~%RESULT =>~% ~{~T~A~%~}" *concurrent-test-results*)
-  (release-lock *concurrent-test-lock*)
-  (pool-report))
+  (release-lock *concurrent-test-lock*))
 
+(defun pooled-query (query)
+  (let* ((pool (make-instance 'pool))
+         (conn (connect pool)))
+    (unwind-protect
+        (execute-query pool conn query)
+      (disconnect pool conn))))
 
+(defun test-package ()
+  (explain! (run 'connection-data))
+  (explain! (run 'pool))
+  (explain! (run 'concurrent-operations)))
 
-(fiveam:debug!)
+(defun initialize  
+       (&key (db-name "scratch") (db-user "scratch-owner") 
+             (db-password "none") (db-host "localhost") (db-port 5432)
+             (db-connector #'postgresql-connector)
+             (db-disconnector #'postgresql-disconnector)
+             (db-executor #'postgresql-executor)
+             (max-connections *default-max-connections*)
+             (test-query *test-query*))
+  (setf *default-connection-data* 
+        (make-instance 'connection-data
+                       :name db-name :host db-host
+                       :port db-port :user db-user
+                       :password db-password
+                       :connect-fn db-connector
+                       :disconnect-fn db-disconnector
+                       :execute-query-fn db-executor))
+  (force-new-pool :max-connections max-connections)
+  (setf *test-query* test-query)
+T)
