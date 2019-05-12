@@ -5,7 +5,7 @@
    :pool :reset :force-new-pool :pool-report :pooled-query 
    :test-package)
   (:documentation "
-The RADIANCE package: pooled access to a single database. Designed to be used inside a backend,
+The RADIANCE-POOL package: pooled access to a single database. Designed to be used inside a backend,
 it's supposed to never invoke the debugger - to run unattended - and safely handles multi-threaded calls.
 Transactions aren't implemented so far.
 In loving memory of Pool of Radiance (https://en.wikipedia.org/wiki/Pool_of_Radiance), one of
@@ -52,5 +52,5 @@ Usage:
   to read from or write to your database. Successful operations will return the query result in the format
   defined in your :DB-EXECUTOR (list of rows as alists is the default).
   If a condition is signaled along the chain of implicit connect-execute-disconnect operations,
-  POOLED-QUERY will return (VALUES NIL CONDITION)
+  POOLED-QUERY will return (VALUES NIL CONDITION STACK-TRACE)
 "))
