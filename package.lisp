@@ -1,4 +1,5 @@
-(defpackage :radiance
+(defpackage :radiance-pool
+  (:nicknames :radpool)
   (:use :cl  :cl-postgres :fiveam :BORDEAUX-THREADS)
   (:export :define-connector :define-disconnector :define-executor :initialize 
    :pool :reset :force-new-pool :pool-report :pooled-query 
@@ -6,12 +7,16 @@
   (:documentation "
 The RADIANCE package: pooled access to a single database. Designed to be used inside a backend,
 it's supposed to never invoke the debugger - to run unattended - and safely handles multi-threaded calls.
+Transactions aren't implemented so far.
+In loving memory of Pool of Radiance (https://en.wikipedia.org/wiki/Pool_of_Radiance), one of
+my first CRPGs.
+
 Usage:
 * general: customizazion
   The POOL object is a singleton. It is created by the first call to any of the following:
-  - (MAKE-INSTANCE 'RADIANCE:POOL) => create or access the singleton
-  - (RADIANCE:POOL-REPORT) => print information about the singleton; implicitly creates one
-  - (RADIANCE:POOLED-QUERY) => returns the result of a query on an implicit pooled connection
+  - (MAKE-INSTANCE 'RADIANCE-POOL:POOL) => create or access the singleton
+  - (RADIANCE-POOL:POOL-REPORT) => print information about the singleton; implicitly creates one
+  - (RADIANCE-POOL:POOLED-QUERY) => returns the result of a query on an implicit pooled connection
   - (RADIANCE:TEST-PACKAGE) => run the test suite, creating/recreating pools as necessary.
   And it is (re)created by
   - (force-new-pool) => dangerous: forcibly closes all pooled connections and recreates the singleton

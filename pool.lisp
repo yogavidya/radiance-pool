@@ -1,4 +1,4 @@
-(in-package :radiance)
+(in-package :radiance-pool)
 
 ;;
 ;; CLASS: pool
@@ -124,10 +124,54 @@
                  :max-connections 
                  (if max-connections max-connections *default-max-connections*)))
 
-(defun pool-report ()
-  "Outputs a description of the POOL to *standard-output*"
-  (format t "~%---------------~%pool singleton description:")
-  (describe (make-instance 'pool))
-  (format t "~%Connections in pool: idle ~S, in use ~D~%---------------~%"
-          (length (connections (make-instance 'pool)))
-          (length (used-connections (make-instance 'pool)))))
+(defun pooled-query (query)
+  (let* ((pool (make-instance 'pool))
+         (conn (connect pool)))
+    (unwind-protect
+        (execute-query pool conn query)
+      (disconnect pool conn))))
+
+(defun concatenate-strings (string-list)
+  (concatenate 'string (first string-list) 
+               (when (rest string-list)
+                 (concatenate-strings (rest string-list)))))
+
+  
+(defun pool-report-line (text value &key (cols 30) (indent 0) (bullet nil))
+  (let ((control-string (concatenate-strings
+                         `("~" ,(format nil "~D" cols) "<"
+                               ,(make-string indent :initial-element #\space)
+                               ,bullet ,(when bullet " ")
+                               ,text "~;" ,(format nil "~A" value)
+                               "~>~%"))))
+    (format nil control-string)))
+
+(defun pool-report-header (text cols &key newline-before newline-after)
+  (format nil "~[~%~;~]~A~%~A~[~%~;~]~%" 
+          (if newline-before 0 10) 
+          text 
+          (make-string cols :initial-element #\-) 
+          (if newline-after 0 10)))
+  
+
+(defun pool-report (&key (stream *standard-output*))
+  "Outputs a description of the POOL to STREAM"
+  (let* ((pool (make-instance 'pool))
+        (conn-data (connection-data pool))
+        (idle-conns (length (connections pool)))
+        (busy-conns (length (used-connections pool)))
+        (tot-conns (+ idle-conns busy-conns))
+        (report-cols 30))
+    (format stream "~S"
+            (concatenate-strings
+             (list
+              (pool-report-header "Database connection:" report-cols :newline-before T)
+               (pool-report-line "DB server host:" (host conn-data) :cols report-cols :indent 2 :bullet "*")
+               (pool-report-line "DB server port:" (port conn-data) :cols report-cols :indent 2 :bullet "*")
+               (pool-report-line "DB name:" (name conn-data) :cols report-cols :indent 2 :bullet "*")
+               (pool-report-line "DB user:" (user conn-data) :cols report-cols :indent 2 :bullet "*")
+               (pool-report-header "Pool details:" report-cols :newline-before T)
+               (pool-report-line "pool total connections:" tot-conns :cols report-cols :indent 2 :bullet "*")
+               (pool-report-line "idle:" idle-conns :cols report-cols :indent 2 :bullet "*")
+               (pool-report-line "busy:" busy-conns :cols report-cols :indent 2 :bullet "*")
+               (pool-report-line "pool max connections:" (max-connections pool) :cols report-cols :indent 2 :bullet "*"))))))

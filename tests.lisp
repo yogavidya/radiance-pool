@@ -1,4 +1,6 @@
-(in-package :radiance)
+(in-package :radiance-pool)
+
+(defparameter *test-query* "select * from test")
 
 ;;
 ;; connection-data tests
@@ -17,7 +19,7 @@
                (multiple-value-list
                 (execute-query *default-connection-data* 
                                (first result-1)
-                               "select * from test"))))
+                               *test-query*))))
          (result-3
           (and (first result-1)
                (multiple-value-list
@@ -36,8 +38,6 @@
 ;;
 ;; pool tests
 ;;
-
-(defparameter *test-query* "select * from test")
 
 (def-test pool ()
   (let*
@@ -125,13 +125,6 @@
     (is-true (first (assoc 'result current-result))))
   (is-true (= *concurrent-tests* (length *concurrent-test-results*)))
   (release-lock *concurrent-test-lock*))
-
-(defun pooled-query (query)
-  (let* ((pool (make-instance 'pool))
-         (conn (connect pool)))
-    (unwind-protect
-        (execute-query pool conn query)
-      (disconnect pool conn))))
 
 (defun test-package ()
   (explain! (run 'connection-data))

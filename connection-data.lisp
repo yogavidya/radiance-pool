@@ -1,8 +1,13 @@
-(in-package :radiance)
+(in-package :radiance-pool)
 
 ;;
 ;; CLASS: connection-data
 ;;
+(defmethod get-stack-trace ((condition condition))
+  (with-output-to-string (out-string) 
+    (uiop/image:print-condition-backtrace condition :stream out-string) 
+    out-string))
+
 (defmacro define-connector ((name connection-data-var) &body connection-forms)
 "Creates a DB-CONNECTOR hook for (INITIALIZE).
 IN: NAME: hook's name
@@ -13,7 +18,7 @@ OUT: a function named NAME to be used as a :DB-CONNECTOR argument for (INITIALIZ
   `(defun ,name (,connection-data-var)
      (handler-case
          (progn ,@connection-forms)
-       (condition (c) (values nil c)))))
+       (condition (condition) (values nil condition (get-stack-trace condition))))))
 
 (defmacro define-disconnector ((name connection-var) &body disconnection-forms)
 "Creates a DB-DISCONNECTOR hook for (INITIALIZE).
@@ -24,7 +29,7 @@ OUT: a function named NAME to be used as a :DB-DISCONNECTOR argument for (INITIA
 `(defun ,name (,connection-var)
      (handler-case
          (progn ,@disconnection-forms)
-       (condition (c) (values nil c))
+       (condition (condition) (values nil condition (get-stack-trace condition)))
        (:no-error () t))))
 
 
@@ -45,16 +50,16 @@ OUT: a function named NAME to be used as a :DB-EXECUTOR argument for (INITIALIZE
           (handler-case
               (progn ,@execute-forms)
             ,@error-restarts
-                (error (c) c))))
+                (error (condition) condition))))
          (let ((result (executor)))
            (disconnect (connection-data (make-instance 'pool)) ,connection-var)
            (if (typep result 'condition)
                (progn 
-                 (values nil result))
+                 (values nil result (get-stack-trace result)))
              result)))))
-;
-; Default CONNECTION-DATA hooks for PostgreSQL
-;
+;;
+;; Default CONNECTION-DATA hooks for PostgreSQL
+;;
 (define-connector (postgresql-connector conn-data)
                   (cl-postgres:open-database (name conn-data)
                                              (user conn-data)
@@ -70,48 +75,9 @@ OUT: a function named NAME to be used as a :DB-EXECUTOR argument for (INITIALIZE
                                       ((database-connection-lost () (cl-postgres:reopen-database conn)
                                                                  (executor))))
   (exec-query conn query-txt 'alist-row-reader))
-
-; Original code for the three default PostgreSQL hooks
-#|
-(defun postgresql-connector (conn-data)
-"Connects using CONN-DATA. 
-success => connection 
-error => (values nil condition)"
-  (handler-case
-      (cl-postgres:open-database (name conn-data)
-                                 (user conn-data)
-                                 (password conn-data)
-                                 (host conn-data)
-                                 (port conn-data))
-    (condition (c) (values nil c))))
-
-(defun postgresql-disconnector (conn)
-"success => T \
- error => (values nil condition)"
-  (handler-case
-      (cl-postgres:close-database conn)
-    (condition (c) (values nil c))
-    (:no-error () t)))
-
-(defun postgresql-executor (conn query-txt)
-"success => query rows \
- error => (values nil condition)"
-  (labels 
-      ((executor ()
-         (handler-case
-             (exec-query conn query-txt 'alist-row-reader)
-           (database-connection-lost () 
-             (cl-postgres:reopen-database conn)
-             (executor))
-           (error (c) c))))
-    (let ((result (executor)))
-      (disconnect (connection-data (make-instance 'pool)) conn)
-      (if (typep result 'condition)
-          (progn 
-            (values nil result))
-        result))))
-|#
-
+;;
+;; Class: CONNECTION-DATA
+;;
 (defclass connection-data ()
   ((name :type string 
          :initarg :name 

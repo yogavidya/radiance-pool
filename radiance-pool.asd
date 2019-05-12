@@ -1,4 +1,4 @@
-(defsystem "radiance"
+(defsystem "radiance-pool"
   :description "A concurrency-safe single-database connection pool"
   :author "Salvatore Uras yogavidya@gmail.com"
   :license  "MIT"
