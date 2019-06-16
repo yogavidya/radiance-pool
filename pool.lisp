@@ -22,11 +22,11 @@
                     :initform *default-connection-data*
                     :reader connection-data
                     :documentation "CONNECTION-DATA for the POOL")
-   (connections :type (cons cl-postgres:database-connection) 
-		:initform nil 
+   (connections :type (or null (cons cl-postgres:database-connection))  
+		:initform nil
 		:accessor connections
                 :documentation "List of idle connections")
-   (used-connections :type (cons cl-postgres:database-connection) 
+   (used-connections :type (or null (cons cl-postgres:database-connection))  
                      :initform nil 
                      :accessor used-connections
                      :documentation "List of busy connections")
